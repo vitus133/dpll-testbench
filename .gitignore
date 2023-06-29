@@ -1,0 +1,11 @@
+.cache/
+.vscode/
+userspace/env/
+*.ko
+*.cmd
+*.o
+*.mod
+*.mod.*
+*.symvers
+*.order
+
