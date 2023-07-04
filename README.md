@@ -53,25 +53,152 @@ pip install -r requirements.txt
 2. Run tests (run as root)
 
 ```bash
-(env) [root@rhel9 ynl]# python cli.py --spec dpll.yaml --dump device-get
-[{'clock-id': 0,
-  'id': 1,
-  'lock-status': 'unlocked',
+(env) [vitaly@rhel9 userspace]# sudo env/bin/python cli.py --spec dpll.yaml --dump device-get
+[{'clock-id': 5799633565433967664,
+  'id': 0,
+  'lock-status': 'holdover',
   'mode': 'automatic',
   'module-name': 'dpll_testbench',
   'type': 'pps'}]
 
-(env) [root@rhel9 ynl]# python cli.py --spec dpll.yaml --do device-get --json '{"id":1}'
-{'clock-id': 0,
- 'id': 1,
- 'lock-status': 'unlocked',
+(env) [vitaly@rhel9 userspace]# sudo env/bin/python cli.py --spec dpll.yaml --do device-get --json '{"id":0}'
+{'clock-id': 5799633565433967664,
+ 'id': 0,
+ 'lock-status': 'locked',
  'mode': 'automatic',
  'module-name': 'dpll_testbench',
  'type': 'pps'}
 
 ```
-## Future plans
 
-1. Implement device state change notification
-2. Implement userspace program in Go, for incorporating in https://github.com/openshift/linuxptp-daemon
- 
+#### Monitoring for device status change
+
+```bash
+vitaly@rhel9 userspace]$ sudo env/bin/python cli.py --spec dpll.yaml --subscribe monitor
+waiting on socket
+received notification:
+{'name': 'device-change-ntf', 'msg': {'id': 0, 'module-name': 'dpll_testbench', 'clock-id': 5799633565433967664, 'lock-status': 'unlocked', 'mode': 'automatic', 'type': 'pps'}}
+waiting on socket
+received notification:
+{'name': 'device-change-ntf', 'msg': {'id': 0, 'module-name': 'dpll_testbench', 'clock-id': 5799633565433967664, 'lock-status': 'locked', 'mode': 'automatic', 'type': 'pps'}}
+waiting on socket
+received notification:
+{'name': 'device-change-ntf', 'msg': {'id': 0, 'module-name': 'dpll_testbench', 'clock-id': 5799633565433967664, 'lock-status': 'locked-ho-acq', 'mode': 'automatic', 'type': 'pps'}}
+waiting on socket
+
+```
+
+### User-space program based on kernel tools
+
+(Kernel tools directory)[kernel-root/tools/net/ynl], in addition to python cli we used above, contains C code generation utilities. When pointed to a generic netlink ddefinitions file (dpll.yaml in our case), userspace header and source files are generated and built into an archive file.
+
+Here is how it's done (cut from [code generation makefile](kernel-root/tools/net/ynl/generated/Makefile)).
+
+[Documentation/netlink/specs/dpll.yaml](kernel-root/Documentation/netlink/specs/dpll.yaml) is used as input to [ynl-gen-c.py](kernel-root/tools/net/ynl/ynl-gen-c.py):
+
+```bash
+%-user.h: ../../../../Documentation/netlink/specs/%.yaml $(TOOL)
+	@echo -e "\tGEN $@"
+	@$(TOOL) --mode user --header --spec $< $(YNL_GEN_ARG_$*) > $@
+
+%-user.c: ../../../../Documentation/netlink/specs/%.yaml $(TOOL)
+	@echo -e "\tGEN $@"
+	@$(TOOL) --mode user --source --spec $< $(YNL_GEN_ARG_$*) > $@
+```
+
+Resulting user space [source](kernel-root/tools/net/ynl/generated/dpll-user.c) and [header](kernel-root/tools/net/ynl/generated/dpll-user.h) are built into an object and `protos.a` archive:
+
+```bash
+
+protos.a: $(OBJS)
+	@echo -e "\tAR $@"
+	@ar rcs $@ $(OBJS)
+
+
+%-user.o: %-user.c %-user.h
+	@echo -e "\tCC $@"
+	@$(COMPILE.c) $(CFLAGS_$*) -o $@ $<
+
+```
+
+The header and `protos.a` can be used to build a [user space program](kernel-root/tools/net/ynl/samples/dpll.c) for accessing our DPLL testbench through kernel dpll driver:
+
+```c
+// SPDX-License-Identifier: GPL-2.0
+#include <stdio.h>
+#include <string.h>
+
+#include <ynl.h>
+
+#include "dpll-user.h"
+
+#define DPLL_ID 0
+
+int main(int argc, char **argv)
+{
+	struct ynl_sock *ys;
+	struct dpll_device_get_rsp *dev;
+	struct dpll_device_get_req *req;
+	int rc = 0;
+
+	ys = ynl_sock_create(&ynl_dpll_family, NULL);
+	if (!ys){
+		fprintf(stderr,"failed to create socket\n");
+		return 1;
+	}
+
+	req = dpll_device_get_req_alloc();
+	if (!req){
+		fprintf(stderr, "failed to allocate request\n");
+		rc = 2;
+		goto sock_close;
+	}
+	
+	dpll_device_get_req_set_id(req, DPLL_ID);
+
+	dev = dpll_device_get(ys, req);
+	
+	if (!dev){
+		fprintf(stderr, "failed to get device\n");
+		rc = 3;
+		goto err_close;
+	}
+
+	printf("Module name: %s\n", dev->module_name);
+	printf("Lock status: %s\n", dpll_lock_status_str(dev->lock_status));
+	printf("DPLL type: %s\n", dpll_type_str(dev->type));
+	printf("Clock ID: %llx\n", dev->clock_id);
+
+	// Free resources
+	dpll_device_get_rsp_free(dev);
+err_close:
+	dpll_device_get_req_free(req);
+sock_close:
+	ynl_sock_destroy(ys);
+	return rc;
+}
+
+```
+Making it:
+
+```bash
+(env) [vitaly@rhel9 samples]$ make
+gcc -std=gnu11 -O2 -W -Wall -Wextra -Wno-unused-parameter -Wshadow -I../lib/ -I../generated/ -idirafter ../../../../include/uapi/    dpll.c ../lib/ynl.a ../generated/protos.a  -lmnl ../lib/ynl.a ../generated/protos.a -o dpll
+```
+
+Running it:
+```bash
+(env) [vitaly@rhel9 samples]$ sudo ./dpll 
+Module name: dpll_testbench
+Lock status: locked-ho-acq
+DPLL type: pps
+Clock ID: 507c6fffff1fb430
+
+```
+
+#### Caveats
+So far I haven't succeeded in building a notification channel parser using the dpll driver. It's so much easier with Python. I did succeed in receiving multicast notifications using direct calls to the `libnl` functions.
+
+## Future plans (subject to project priorities)
+
+1. Implement userspace program in Go, for incorporating in https://github.com/openshift/linuxptp-daemon

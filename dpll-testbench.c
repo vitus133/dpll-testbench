@@ -3,18 +3,19 @@
  * Generic netlink for DPLL testbench
  */
 
+#include <linux/kthread.h>
 #include <linux/module.h>
 #include <linux/dpll.h>
 #include <net/genetlink.h>
 #include "dpll-testbench.h"
 
-typedef struct  {
-	struct dpll_device *dpll;
-	int dpll_idx;
-	
-}test_dpll;
-#define NUM_DPLL_DEVICES 1
-test_dpll d[NUM_DPLL_DEVICES];
+
+struct dpll_device *dpll;
+struct kthread_worker* kworker;
+struct kthread_delayed_work work;
+enum dpll_lock_status current_status;
+enum dpll_lock_status previous_status;
+
 
 static const struct dpll_device_ops test_dpll_ops = {
 	.lock_status_get = test_dpll_lock_status_get,
@@ -23,21 +24,11 @@ static const struct dpll_device_ops test_dpll_ops = {
 };
 
 
-static const enum dpll_lock_status
-test_dpll_status[__DPLL_LOCK_STATUS_MAX] = {
-	[TEST_CGU_STATE_INVALID] = 0,
-	[TEST_CGU_STATE_FREERUN] = DPLL_LOCK_STATUS_UNLOCKED,
-	[TEST_CGU_STATE_LOCKED] = DPLL_LOCK_STATUS_LOCKED,
-	[TEST_CGU_STATE_LOCKED_HO_ACQ] = DPLL_LOCK_STATUS_LOCKED_HO_ACQ,
-	[TEST_CGU_STATE_HOLDOVER] = DPLL_LOCK_STATUS_HOLDOVER,
-};
-
 static int test_dpll_mode_get(const struct dpll_device *dpll, void *priv,
 			     enum dpll_mode *mode,
 			     struct netlink_ext_ack *extack)
 {
 	*mode = DPLL_MODE_AUTOMATIC;
-
 	return 0;
 }
 
@@ -45,54 +36,84 @@ static bool test_dpll_mode_supported(const struct dpll_device *dpll, void *priv,
 				    enum dpll_mode mode,
 				    struct netlink_ext_ack *extack)
 {
-	if (mode == DPLL_MODE_AUTOMATIC)
-		return true;
-
-	return false;
+	return true;
 }
 
 static int test_dpll_lock_status_get(const struct dpll_device *dpll, void *priv,
 				    enum dpll_lock_status *status,
 				    struct netlink_ext_ack *extack)
 {
+	*status = current_status;
+	return 0;
+}
 
-	*status = test_dpll_status[TEST_CGU_STATE_FREERUN];
+static void advance_dpll_state(void){
+	current_status += 1;
+	if (current_status >= __DPLL_LOCK_STATUS_MAX){
+		current_status = DPLL_LOCK_STATUS_UNLOCKED;
+	}
+}
+
+static void test_dpll_periodic_work(struct kthread_work *w)
+{
+	static int counter = 0;
+
+	counter += 1;
+	if (counter >= 10){
+		counter = 0;
+		advance_dpll_state();
+	}
+	if (current_status != previous_status){
+		dpll_device_change_ntf(dpll);
+		previous_status = current_status;
+	}
+	kthread_queue_delayed_work(kworker, &work,  msecs_to_jiffies(500));
+}
+
+static int test_dpll_init_worker(void)
+{
+	kthread_init_delayed_work(&work, test_dpll_periodic_work);
+	kworker = kthread_create_worker(0, "dpll-testbench");
+	if (IS_ERR(kworker))
+		return PTR_ERR(kworker);	
+	kthread_queue_delayed_work(kworker, &work, 0);
 
 	return 0;
 }
 
-static int init_dpll_testbench(void);
+
 static int __init init_dpll_testbench()
 {
 	int ret = 0;
+	u64 clock_id = 5799633565433967664;
+	current_status = DPLL_LOCK_STATUS_UNLOCKED;
+	previous_status = current_status;
 
 	pr_info("starting dpll test bench\n");
-	for (int i=0; i<NUM_DPLL_DEVICES; ++i){
-		u64 clock_id = i;
-		d[i].dpll_idx = i;
-		d[i].dpll = dpll_device_get(clock_id, d[i].dpll_idx, THIS_MODULE);
-		if (d[i].dpll == NULL) {
-			pr_err("dpll_device_get returned error");
-			ret = 1;
-			break;
-		}
-		pr_info("dpll %llx has index %d", (u64)d[i].dpll, i);
-		ret = dpll_device_register(d[i].dpll, i==0?DPLL_TYPE_PPS:DPLL_TYPE_EEC, &test_dpll_ops, &d[i]);
-		if (ret) {
-			dpll_device_put(d->dpll);
-			return ret;
-		}
-
+	
+	dpll = dpll_device_get(clock_id, 0, THIS_MODULE);
+	if (dpll == NULL) {
+		pr_err("dpll_device_get returned error");
+		return 1;
 	}
+	pr_info("dpll %llx", (u64)dpll);
+	ret = dpll_device_register(dpll, DPLL_TYPE_PPS, &test_dpll_ops, dpll);
+	if (ret) {
+		dpll_device_put(dpll);
+		return ret;
+	}
+
+	
+	test_dpll_init_worker();
 	return ret;
 }
-static void exit_dpll_testbench(void);
+
 static void __exit exit_dpll_testbench(void)
 {
-	for (int i=0; i<NUM_DPLL_DEVICES; ++i){
-		dpll_device_unregister(d[i].dpll, &test_dpll_ops, &d[i]);
-		dpll_device_put(d[i].dpll);
-	}
+	
+	dpll_device_unregister(dpll, &test_dpll_ops, dpll);
+	dpll_device_put(dpll);
+	
 	pr_info("stopped dpll test bench\n");
 }
 

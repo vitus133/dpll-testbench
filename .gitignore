@@ -1,5 +1,7 @@
 .cache/
 .vscode/
+kernel-root/tools/net/ynl/env
+kernel-root/tools/net/ynl/samples/dpll
 userspace/env/
 *.ko
 *.cmd

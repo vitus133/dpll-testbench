@@ -1,19 +1,9 @@
 #ifndef DPLL_TESTBENCH_H
 #define DPLL_TESTBENCH_H
 
-enum test_cgu_state {
-	TEST_CGU_STATE_UNKNOWN = -1,
-	TEST_CGU_STATE_INVALID,		/* state is not valid */
-	TEST_CGU_STATE_FREERUN,		/* clock is free-running */
-	TEST_CGU_STATE_LOCKED,		/* clock is locked to the reference,
-					 * but the holdover memory is not valid
-					 */
-	TEST_CGU_STATE_LOCKED_HO_ACQ,	/* clock is locked to the reference
-					 * and holdover memory is valid
-					 */
-	TEST_CGU_STATE_HOLDOVER,		/* clock is in holdover mode */
-	TEST_CGU_STATE_MAX
-};
+static int init_dpll_testbench(void);
+
+static void exit_dpll_testbench(void);
 
 static int test_dpll_lock_status_get(const struct dpll_device *dpll, void *priv,
 				    enum dpll_lock_status *status,
