@@ -11,7 +11,7 @@ endif
 
 LDLIBS=-lmnl ../lib/ynl.a ../generated/protos.a
 
-SRCS=$(wildcard dpll.c)
+SRCS=$(wildcard *.c)
 BINS=$(patsubst %.c,%,${SRCS})
 
 include $(wildcard *.d)
