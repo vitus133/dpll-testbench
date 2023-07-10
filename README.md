@@ -8,6 +8,15 @@ DPLL device queries, configuration and notifications through generic netlink.
 The testbench contains kernel module built around Linux DPLL API, and a copy
 of user space Python CLI for interacting with the module through generic netlink.
 
+## Prerequisites
+libmnl and libmnl-devel
+
+Install with
+
+```bash
+sudo dnf install libmnl libmnl-devel
+```
+
 ## Build and run
 
 ### Kernel

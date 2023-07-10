@@ -2,6 +2,8 @@
 
 include ../Makefile.deps
 
+JSON_C_DIR=/usr/lib64
+
 CC=gcc
 CFLAGS=-std=gnu11 -O2 -W -Wall -Wextra -Wno-unused-parameter -Wshadow \
 	-I../lib/ -I../generated/ -idirafter $(UAPI_PATH)
@@ -10,8 +12,9 @@ ifeq ("$(DEBUG)","1")
 endif
 
 LDLIBS=-lmnl ../lib/ynl.a ../generated/protos.a
+LDFLAGS+= -L$(JSON_C_DIR) -ljson-c
 
-SRCS=$(wildcard dpll.c)
+SRCS=$(wildcard *.c)
 BINS=$(patsubst %.c,%,${SRCS})
 
 include $(wildcard *.d)
