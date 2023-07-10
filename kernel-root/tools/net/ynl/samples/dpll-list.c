@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <time.h>
 #include <ynl.h>
 #include <libmnl/libmnl.h>
 #include <linux/genetlink.h>
