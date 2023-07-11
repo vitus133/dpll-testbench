@@ -2,6 +2,7 @@
 .vscode/
 kernel-root/tools/net/ynl/env
 kernel-root/tools/net/ynl/samples/dpll
+kernel-root/tools/net/ynl/samples/dpll-list
 userspace/env/
 *.ko
 *.cmd
