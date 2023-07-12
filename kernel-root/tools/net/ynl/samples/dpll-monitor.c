@@ -12,9 +12,6 @@
 
 #include "dpll-user.h"
 
-#define DPLL_DEVICE_MCAST_GROUP "monitor"
-
-
 static int ntf_data_cb(const struct nlmsghdr *nlh, void *data)
 {
 	const struct nlattr *attr;
@@ -78,6 +75,6 @@ int ntf_main(const char* mcast_group)
 
 int main(int argc, char **argv)
 {
-	ntf_main(DPLL_DEVICE_MCAST_GROUP);
+	ntf_main(DPLL_MCGRP_MONITOR);
 	return 0;
 }
