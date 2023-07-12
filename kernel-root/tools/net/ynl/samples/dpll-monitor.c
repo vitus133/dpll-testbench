@@ -7,7 +7,6 @@
 #include <ynl.h>
 #include <libmnl/libmnl.h>
 #include <linux/genetlink.h>
-
 #include "dpll-user.h"
 
 static int ntf_data_cb(const struct nlmsghdr *nlh, void *data)
@@ -37,54 +36,41 @@ static int ntf_data_cb(const struct nlmsghdr *nlh, void *data)
 		}
 
 	}
-
-	
 	return MNL_CB_OK;
 }
 
-int ntf_main(int group)
+int ntf_main(const char* mcast_group)
 {
-	struct mnl_socket *nl;
-	char buf[MNL_SOCKET_BUFFER_SIZE];
+	struct ynl_sock *ys;
 	int ret;
 
-	nl = mnl_socket_open(NETLINK_GENERIC);
-	if (nl == NULL) {
-		perror("mnl_socket_open");
-		exit(EXIT_FAILURE);
+	ys = ynl_sock_create(&ynl_dpll_family, NULL);
+	if (!ys){
+		fprintf(stderr,"dpll-monitor: failed to create socket\n");
+		return -1;
 	}
 
-	if (mnl_socket_bind(nl, 0, MNL_SOCKET_AUTOPID) < 0) {
-		perror("mnl_socket_bind");
-		exit(EXIT_FAILURE);
-	}
+	ynl_subscribe(ys, mcast_group);
 
-	if (mnl_socket_setsockopt(nl, NETLINK_ADD_MEMBERSHIP, &group,
-				  sizeof(int)) < 0) {
-		perror("mnl_socket_setsockopt");
-		exit(EXIT_FAILURE);
-	}
-
-	ret = mnl_socket_recvfrom(nl, buf, sizeof(buf));
+	ret = mnl_socket_recvfrom(ys->sock, ys->rx_buf, MNL_SOCKET_BUFFER_SIZE);
 	while (ret > 0) {
-		ret = mnl_cb_run(buf, ret, 0, 0, ntf_data_cb, NULL);
-		if (ret <= 0)
+		ret = mnl_cb_run(ys->rx_buf, ret, 0, 0, ntf_data_cb, NULL);
+		if (ret <= 0){
 			break;
-		ret = mnl_socket_recvfrom(nl, buf, sizeof(buf));
+		}
+		ret = mnl_socket_recvfrom(ys->sock, ys->rx_buf, MNL_SOCKET_BUFFER_SIZE);
 	}
 	if (ret == -1) {
 		perror("error");
 		exit(EXIT_FAILURE);
 	}
-
-	mnl_socket_close(nl);
-
-	return 0;
+	ynl_sock_destroy(ys);
+	return 	0;
 }
 
 
 int main(int argc, char **argv)
 {
-	ntf_main(4);
+	ntf_main("monitor");
 	return 0;
 }
