@@ -43,6 +43,7 @@ int main(int argc, char **argv)
 		json_object_array_add(root, child);	
 	}
 	json_object_to_fd(fileno(stdout), root, 0); //JSON_C_TO_STRING_PRETTY
+	json_object_put(root);
 	dpll_device_get_list_free(list);
 
 err_close:
