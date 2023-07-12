@@ -85,7 +85,6 @@ int ntf_main(int group)
 
 int main(int argc, char **argv)
 {
-	
 	ntf_main(4);
 	return 0;
 }
