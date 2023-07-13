@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	protocol = "unix"
+	protocol = "unixpacket"
 	sockAddr = "/tmp/us_xfr"
 )
 
@@ -17,7 +17,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer conn.Close()
-	buf := make([]byte, 4096)
+	buf := make([]byte, 1024)
 	for {
 		_, err = conn.Read(buf)
 		if err != nil {

@@ -54,7 +54,7 @@ int ntf_main(const char* mcast_group)
 	int ret = 0;
 	struct sockaddr_un addr;
   	
-	int sfd = socket(AF_UNIX, SOCK_STREAM, 0);
+	int sfd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
 	if (sfd == -1) {
 		return -1;
 	}
