@@ -3,7 +3,10 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <errno.h>
 #include <time.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <ynl.h>
 #include <libmnl/libmnl.h> //dnf install libmnl-devel
 #include <linux/genetlink.h>
@@ -11,6 +14,9 @@
 #include <json-c/json_object.h>
 
 #include "dpll-user.h"
+
+#define BUF_SIZE 512
+#define SV_SOCK_PATH "/tmp/us_xfr"
 
 static int ntf_data_cb(const struct nlmsghdr *nlh, void *data)
 {
@@ -46,6 +52,33 @@ int ntf_main(const char* mcast_group)
 	struct ynl_sock *ys;
 	json_object *data;
 	int ret = 0;
+	struct sockaddr_un addr;
+  	
+	int sfd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (sfd == -1) {
+		return -1;
+	}
+	/* check address isn't longer than the buffer (108 characters)*/
+	if (strlen(SV_SOCK_PATH) > sizeof(addr.sun_path) - 1) {
+		return -2;
+	}
+	// Ensure no file exists on address path
+	if (remove(SV_SOCK_PATH) == -1 && errno != ENOENT) {
+		return -3;
+	}
+	memset(&addr, 0, sizeof(struct sockaddr_un));
+	addr.sun_family = AF_UNIX;
+	strncpy(addr.sun_path, SV_SOCK_PATH, sizeof(addr.sun_path) - 1);
+	if (bind(sfd, (struct sockaddr *) &addr, sizeof(struct sockaddr_un)) == -1) {
+		return -4;
+	}
+	if (listen(sfd, 1) == -1) {
+		return -5;
+	}
+	printf("Waiting for connections\n");
+	/* This will block until a client connects: */
+	int cfd = accept(sfd, NULL, NULL);
+	printf("Accepted socket fd = %d\n", cfd);
 
 	ys = ynl_sock_create(&ynl_dpll_family, NULL);
 	if (!ys){
@@ -61,6 +94,7 @@ int ntf_main(const char* mcast_group)
 			break;
 		}
 		json_object_to_fd(fileno(stdout), data, 0);
+		json_object_to_fd(cfd, data, 0);
 		json_object_put(data);
 		ret = mnl_socket_recvfrom(ys->sock, ys->rx_buf, MNL_SOCKET_BUFFER_SIZE);
 	}
