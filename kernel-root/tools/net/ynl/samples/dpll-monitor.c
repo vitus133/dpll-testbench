@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
+#include <errno.h>
+#include <getopt.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <unistd.h>
-#include <errno.h>
-#include <time.h>
+
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <ynl.h>
@@ -16,7 +16,19 @@
 #include "dpll-user.h"
 
 #define BUF_SIZE 512
-#define SV_SOCK_PATH "/tmp/us_xfr"
+#define SOCKET_PATH_MAX_LEN 108 // maximum length of socket path in struct sockaddr_un
+
+enum return_code {
+	OK = 0,
+	ERROR_SRV_SOCKET = 1,
+	UDS_PATH_TOO_LONG = 2,
+	FAIL_CLEARING_UDS_FILE = 3,
+	FAIL_BIND_SERVER_SOCK = 4,
+	FAIL_LISTEN_UDS = 5,
+	FAIL_CREATE_YNL_SOCKET = 6,
+	FAIL_RECEIVE_YNL_DATA = 7,
+	UDS_PATH_FAIL = 8
+};
 
 static int ntf_data_cb(const struct nlmsghdr *nlh, void *data)
 {
@@ -47,68 +59,109 @@ static int ntf_data_cb(const struct nlmsghdr *nlh, void *data)
 	return MNL_CB_OK;
 }
 
-int ntf_main(const char* mcast_group)
+int ntf_main(const char* mcast_group, bool stdout_print, char* socket_path)
 {
-	struct ynl_sock *ys;
-	json_object *data;
-	int ret = 0;
+	struct ynl_sock *ys = NULL;
+	json_object *data = NULL;
+	int recv = 0;
+	int rc = 0;
 	struct sockaddr_un addr;
-  	
-	int sfd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
-	if (sfd == -1) {
-		return -1;
+	int cfd = 0, sfd = 0; //client, server UDS file descriptors
+	
+	bool to_socket = (bool)strcmp(socket_path, "");
+	if (to_socket){
+		sfd = socket(AF_UNIX, (SOCK_SEQPACKET | SOCK_CLOEXEC), 0);
+		if (sfd == -1) {
+			return ERROR_SRV_SOCKET;
+		}
+		/* check address isn't longer than the buffer (108 characters)*/
+		if (strlen(socket_path) > sizeof(addr.sun_path) - 1) {
+			rc = UDS_PATH_TOO_LONG;
+			goto exit;
+		}
+		// Ensure no file exists on address path
+		if (remove(socket_path) == -1 && errno != ENOENT) {
+			rc = FAIL_CLEARING_UDS_FILE;
+			goto exit;
+		}
+		memset(&addr, 0, sizeof(struct sockaddr_un));
+		addr.sun_family = AF_UNIX;
+		strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
+		if (bind(sfd, (struct sockaddr *) &addr, sizeof(struct sockaddr_un)) == -1) {
+			rc = FAIL_BIND_SERVER_SOCK;
+			goto exit;
+		}
+		if (listen(sfd, 1) == -1) {
+			rc = FAIL_LISTEN_UDS;
+			goto exit;
+		}
+		/* This will block until a client connects: */
+		cfd = accept(sfd, NULL, NULL);
 	}
-	/* check address isn't longer than the buffer (108 characters)*/
-	if (strlen(SV_SOCK_PATH) > sizeof(addr.sun_path) - 1) {
-		return -2;
-	}
-	// Ensure no file exists on address path
-	if (remove(SV_SOCK_PATH) == -1 && errno != ENOENT) {
-		return -3;
-	}
-	memset(&addr, 0, sizeof(struct sockaddr_un));
-	addr.sun_family = AF_UNIX;
-	strncpy(addr.sun_path, SV_SOCK_PATH, sizeof(addr.sun_path) - 1);
-	if (bind(sfd, (struct sockaddr *) &addr, sizeof(struct sockaddr_un)) == -1) {
-		return -4;
-	}
-	if (listen(sfd, 1) == -1) {
-		return -5;
-	}
-	printf("Waiting for connections\n");
-	/* This will block until a client connects: */
-	int cfd = accept(sfd, NULL, NULL);
-	printf("Accepted socket fd = %d\n", cfd);
 
 	ys = ynl_sock_create(&ynl_dpll_family, NULL);
 	if (!ys){
-		fprintf(stderr,"dpll-monitor failed to create socket\n");
-		return -1;
+		rc = FAIL_CREATE_YNL_SOCKET;
+		goto exit;
 	}
 	ynl_subscribe(ys, mcast_group);
-	ret = mnl_socket_recvfrom(ys->sock, ys->rx_buf, MNL_SOCKET_BUFFER_SIZE);
-	while (ret > 0) {
+	recv = mnl_socket_recvfrom(ys->sock, ys->rx_buf, MNL_SOCKET_BUFFER_SIZE);
+	while (recv > 0) {
 		data = json_object_new_object();
-		ret = mnl_cb_run(ys->rx_buf, ret, 0, 0, ntf_data_cb, (void*)data);
-		if (ret <= 0){
-			break;
+		recv = mnl_cb_run(ys->rx_buf, recv, 0, 0, ntf_data_cb, (void*)data);
+		if (recv <= 0){
+			rc = FAIL_RECEIVE_YNL_DATA;
+			goto exit;
 		}
-		json_object_to_fd(fileno(stdout), data, 0);
-		json_object_to_fd(cfd, data, 0);
+		if (stdout_print)
+			json_object_to_fd(fileno(stdout), data, 0);
+		if (to_socket){
+			if (access(socket_path, F_OK) == 0) {
+				json_object_to_fd(cfd, data, 0);
+			} else {
+				rc = UDS_PATH_FAIL;
+				goto exit;
+			}
+			
+		}
 		json_object_put(data);
-		ret = mnl_socket_recvfrom(ys->sock, ys->rx_buf, MNL_SOCKET_BUFFER_SIZE);
+		recv = mnl_socket_recvfrom(ys->sock, ys->rx_buf, MNL_SOCKET_BUFFER_SIZE);
 	}
-	ynl_sock_destroy(ys);
-	if (ret == -1) {
-		perror("error");
-		exit(EXIT_FAILURE);
-	}
-	return 	0;
+exit:
+	if(sfd)
+		close(sfd);
+	if(cfd)
+		close(cfd);
+	if (ys)
+		ynl_sock_destroy(ys);
+	if (data)
+		json_object_put(data);
+	return 	rc;
 }
 
 
 int main(int argc, char **argv)
 {
-	ntf_main(DPLL_MCGRP_MONITOR);
-	return 0;
+	bool stdout_print = false;
+	char socket_path[SOCKET_PATH_MAX_LEN] = "";
+	int opt;
+ 
+	while ((opt = getopt(argc, argv, "ou:")) != -1) {
+		switch (opt) {
+		case 'o':
+			stdout_print = true;
+		break;
+		case 'u':
+			strcpy(socket_path, optarg);
+			break;
+		default:
+			fprintf(stderr, "Usage: %s [-o]|[-u <socket path>]\n", argv[0]);
+			exit(EXIT_FAILURE);
+		}
+	}
+	if (!strcmp(socket_path, "") && !stdout_print){
+		printf("either socket path or stdout flag must be specified\n");
+		exit(EXIT_FAILURE);
+	}
+	return ntf_main(DPLL_MCGRP_MONITOR, stdout_print, socket_path);
 }
