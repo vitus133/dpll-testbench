@@ -7,6 +7,7 @@ userspace/env/
 *.ko
 *.cmd
 *.o
+*.d
 *.mod
 *.mod.*
 *.symvers
